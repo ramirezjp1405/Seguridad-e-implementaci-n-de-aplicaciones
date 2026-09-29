@@ -14,6 +14,7 @@ pipeline {
   environment {
     IMAGE = 'proyecto-web'
     CONTAINER = 'proyecto-web-prod'
+    TRIVY = 'aquasec/trivy:0.72.0'
   }
 
   stages {
@@ -26,6 +27,19 @@ pipeline {
     stage('Build') {
       steps {
         sh 'docker build -t ${IMAGE}:${BUILD_NUMBER} -t ${IMAGE}:latest .'
+      }
+    }
+
+    stage('Security Scan') {
+      steps {
+        sh '''
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache/ \
+            ${TRIVY} image \
+            --severity CRITICAL --ignore-unfixed --exit-code 1 \
+            ${IMAGE}:${BUILD_NUMBER}
+        '''
       }
     }
 
@@ -49,8 +63,17 @@ pipeline {
     stage('Deploy') {
       steps {
         sh '''
+          docker network create web-net || true
           docker rm -f ${CONTAINER} || true
-          docker run -d --name ${CONTAINER} --restart unless-stopped -p 8080:8080 ${IMAGE}:${BUILD_NUMBER}
+          docker run -d --name ${CONTAINER} \
+            --network web-net \
+            --restart unless-stopped \
+            --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
+            --read-only --tmpfs /tmp \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --memory 128m --cpus 0.5 --pids-limit 100 \
+            -p 8080:8080 ${IMAGE}:${BUILD_NUMBER}
         '''
       }
     }
